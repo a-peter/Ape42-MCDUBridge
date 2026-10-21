@@ -5,3 +5,6 @@ snapshots/*.txt text eol=lf
 *.md text eol=lf
 
 *.png binary
+
+# Batchdateien brauchen CRLF, sonst springt goto unter Umstaenden falsch
+*.bat text eol=crlf

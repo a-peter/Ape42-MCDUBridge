@@ -1,6 +1,6 @@
 """
 Bridge: MCDU-Pop-out des iniBuilds A330 (MSFS 2024) -> WinCtrl/WinWing MCDU über MobiFlight.
-Version 1.0.1
+Version 1.0.2
 
 Der A330 exportiert seinen MCDU-Inhalt nicht (siehe probe_mcdu_export.py). Deshalb wird
 das Pop-out-Fenster ("WASMINSTRUMENT") abfotografiert, in das 24x14-Zeichenraster zerlegt,
@@ -17,7 +17,7 @@ Befehle:
   python mcdu_screen_bridge.py label 3=A 7=←   # unbekannte Zeichen benennen (Nummern aus dem Übersichtsbild)
 """
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import argparse
 import asyncio
@@ -688,6 +688,25 @@ def render_debug(grid, status, problem=None):
 
 # ---------------------------------------------------------------- Bridge-Betrieb
 
+INSTANCE_MUTEX = "Local\\WinCtrlMcduScreenBridge"
+EXIT_ALREADY_RUNNING = 3   # eigener Exit-Code, damit eine Startdatei den Fall erkennen kann
+_instance_handle = None    # Mutex-Handle bis Prozessende festhalten
+
+
+def ensure_single_instance():
+    """Nur eine laufende Bridge erlauben: benannter Windows-Mutex. Windows gibt ihn beim Prozessende
+    automatisch frei, auch nach einem Absturz; es bleiben also keine Sperrdateien liegen."""
+    global _instance_handle
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    handle = kernel32.CreateMutexW(None, False, INSTANCE_MUTEX)
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        print("Die MCDU-Bridge läuft bereits. Diese zweite Instanz wird beendet.", flush=True)
+        sys.exit(EXIT_ALREADY_RUNNING)
+    _instance_handle = handle
+
+
 async def open_mobiflight(url):
     import websockets
 
@@ -705,6 +724,7 @@ async def cmd_run(args):
           f"Verbinde mit {args.url} ...", flush=True)
     ws, connecting, next_try, last_sent, last_hash = None, None, 0.0, None, None
     last_problem = "start"
+    last_connection = None
     connection = "Verbindungsaufbau ..."
     while True:
         now = time.monotonic()
@@ -720,8 +740,6 @@ async def cmd_run(args):
                 next_try = now + 5
                 connection = f"nicht verbunden ({type(e).__name__}), neuer Versuch alle 5 s"
             connecting = None
-            if not args.debug:
-                print(f"MobiFlight: {connection}", flush=True)
 
         t0 = time.perf_counter()
         cells = grab_cells()
@@ -738,8 +756,10 @@ async def cmd_run(args):
                 except Exception as e:
                     ws, next_try = None, time.monotonic() + 5
                     connection = f"Verbindung abgebrochen ({type(e).__name__}), neuer Versuch in 5 s"
-                    if not args.debug:
-                        print(f"MobiFlight: {connection}", flush=True)
+        # ohne --debug den MobiFlight-Status nur bei einem Wechsel melden, nicht bei jedem neuen Versuch
+        if not args.debug and connection != last_connection:
+            print(f"MobiFlight: {connection}", flush=True)
+            last_connection = connection
 
         problem = window_problem() if grid is None else None
         if not args.debug and problem != last_problem:
@@ -792,6 +812,7 @@ def main():
     WINDOW_OVERRIDE = getattr(args, "window", None)
 
     if args.cmd == "run":
+        ensure_single_instance()
         try:
             asyncio.run(cmd_run(args))
         except KeyboardInterrupt:

@@ -65,6 +65,10 @@ MSFS-Pop-out ──PrintWindow──► Normalisieren ──► 24×14 zerlegen 
 - **Betrieb** (`cmd_run`): Die Erkennung läuft immer. Die MobiFlight-Verbindung wird im Hintergrund-Task aufgebaut,
   weil ein Versuch ohne laufendes MobiFlight unter Windows ca. 3 s blockiert. Neuer Versuch alle 5 s.
   Gesendet wird nur bei Änderung.
+- **Nur eine Instanz** (`ensure_single_instance`): benannter Mutex `Local\WinCtrlMcduScreenBridge`, nur für `run`.
+  Eine zweite Instanz endet mit Exit-Code 3, den `start_bridge.bat` gesondert auswertet. Die Batchdatei braucht
+  CRLF-Zeilenenden (siehe `.gitattributes`), sonst springt `goto` unter Umständen falsch.
+- Ohne `--debug` wird der MobiFlight-Status nur bei einem Wechsel ausgegeben, nicht bei jedem Verbindungsversuch.
 - **Debug** (`run --debug`): Farbige Konsolenausgabe (ANSI 24 bit, VT-Modus per SetConsoleMode, stdout UTF-8).
   Neu gezeichnet wird nur, wenn sich der Hash über Zeichen+Farbe, den MobiFlight-Status oder den Fensterzustand ändert.
 
@@ -82,7 +86,7 @@ MSFS-Pop-out ──PrintWindow──► Normalisieren ──► 24×14 zerlegen 
 - Abschrift `x.txt`: 14 Zeilen, spaltengenau, UTF-8 mit LF (siehe `.gitattributes`).
 - `teach x.txt --image x.png`: Übernimmt neue Zeichenbilder (Größe bei Symbolen vom Nachbarbuchstaben) und meldet
   Abweichungen zwischen Bild und Abschrift.
-- `snapshots/`: 29 Referenzseiten (Bild + Abschrift), Stand v1.0.1 mit **0 Fehlern bei 3509 Zeichen**.
+- `snapshots/`: 29 Referenzseiten (Bild + Abschrift), Stand v1.0.2 mit **0 Fehlern bei 3509 Zeichen**.
   Prüfung nach Änderungen an Zerlegung oder Vergleich:
 
 ```python
