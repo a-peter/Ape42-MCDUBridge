@@ -1,6 +1,6 @@
 # WinCtrl MCDU ↔ iniBuilds A330 (MSFS 2024)
 
-Version 1.0.2. Die installierte Version zeigt `python mcdu_screen_bridge.py --version`.
+Version 1.0.3. Die installierte Version zeigt `python mcdu_screen_bridge.py --version`.
 
 Der Microsoft/iniBuilds A330 gibt den MCDU-Inhalt nicht nach außen. Deshalb liest
 `mcdu_screen_bridge.py` den Bildschirm aus dem Pop-out-Fenster ab und schickt ihn über
@@ -39,6 +39,13 @@ MSFS-Pop-out "WASMINSTRUMENT" ──Bildaufnahme──► mcdu_screen_bridge.py 
 
    `run` läuft nur **einmal**: Eine zweite Instanz meldet „Die MCDU-Bridge läuft bereits“ und beendet sich mit
    Exit-Code 3. Das gilt auch beim direkten Start mit `python`. Andere Befehle wie `show` oder `snap` sind davon nicht betroffen.
+
+5. Bridge beenden: Strg+C in ihrem Fenster, oder von außen per Doppelklick auf `stop_bridge.bat` bzw.
+   ```
+   python mcdu_screen_bridge.py stop
+   ```
+   `stop` sendet ein Stopp-Signal und wartet (Standard 10 s, `--timeout`), bis die Bridge sich sauber beendet und die
+   MobiFlight-Verbindung geschlossen hat. Exit-Codes: 0 beendet, 4 es läuft keine Bridge, 5 Bridge reagiert nicht.
 
 ### Debug-Modus
 

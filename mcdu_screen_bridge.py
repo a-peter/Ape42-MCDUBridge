@@ -1,6 +1,6 @@
 """
 Bridge: MCDU-Pop-out des iniBuilds A330 (MSFS 2024) -> WinCtrl/WinWing MCDU über MobiFlight.
-Version 1.0.2
+Version 1.0.3
 
 Der A330 exportiert seinen MCDU-Inhalt nicht (siehe probe_mcdu_export.py). Deshalb wird
 das Pop-out-Fenster ("WASMINSTRUMENT") abfotografiert, in das 24x14-Zeichenraster zerlegt,
@@ -9,6 +9,7 @@ im MobiFlight-Format an ws://localhost:8320/winwing/cdu-captain geschickt.
 
 Befehle:
   python mcdu_screen_bridge.py run        # Bridge betreiben
+  python mcdu_screen_bridge.py stop       # laufende Bridge beenden
   python mcdu_screen_bridge.py show       # einmal erkennen und als Text ausgeben
   python mcdu_screen_bridge.py record     # Seiten mit unbekannten Zeichen als Snapshot speichern
   python mcdu_screen_bridge.py teach snapshots/x.txt --image snapshots/x.png   # Zeichen per Abschrift lernen
@@ -17,7 +18,7 @@ Befehle:
   python mcdu_screen_bridge.py label 3=A 7=←   # unbekannte Zeichen benennen (Nummern aus dem Übersichtsbild)
 """
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import argparse
 import asyncio
@@ -689,22 +690,59 @@ def render_debug(grid, status, problem=None):
 # ---------------------------------------------------------------- Bridge-Betrieb
 
 INSTANCE_MUTEX = "Local\\WinCtrlMcduScreenBridge"
-EXIT_ALREADY_RUNNING = 3   # eigener Exit-Code, damit eine Startdatei den Fall erkennen kann
-_instance_handle = None    # Mutex-Handle bis Prozessende festhalten
+STOP_EVENT = "Local\\WinCtrlMcduScreenBridgeStop"
+EXIT_ALREADY_RUNNING = 3   # eigene Exit-Codes, damit Startdateien die Fälle erkennen können
+EXIT_NOT_RUNNING = 4
+EXIT_STOP_TIMEOUT = 5
+_instance_handles = []     # Mutex- und Ereignis-Handle bis Prozessende festhalten
+
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_k32.CreateMutexW.restype = _k32.OpenMutexW.restype = wintypes.HANDLE
+_k32.CreateEventW.restype = _k32.OpenEventW.restype = wintypes.HANDLE
+_k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+_k32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+_k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+_k32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+_k32.SetEvent.argtypes = _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+_k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
 
 
 def ensure_single_instance():
     """Nur eine laufende Bridge erlauben: benannter Windows-Mutex. Windows gibt ihn beim Prozessende
-    automatisch frei, auch nach einem Absturz; es bleiben also keine Sperrdateien liegen."""
-    global _instance_handle
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.restype = wintypes.HANDLE
-    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
-    handle = kernel32.CreateMutexW(None, False, INSTANCE_MUTEX)
+    automatisch frei, auch nach einem Absturz; es bleiben also keine Sperrdateien liegen.
+    Liefert das Stopp-Ereignis, über das "stop" die laufende Bridge beendet."""
+    mutex = _k32.CreateMutexW(None, False, INSTANCE_MUTEX)
     if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
         print("Die MCDU-Bridge läuft bereits. Diese zweite Instanz wird beendet.", flush=True)
         sys.exit(EXIT_ALREADY_RUNNING)
-    _instance_handle = handle
+    stop_event = _k32.CreateEventW(None, True, False, STOP_EVENT)  # manuell zurückgesetzt, anfangs aus
+    _instance_handles.extend([mutex, stop_event])
+    return stop_event
+
+
+def stop_requested(stop_event):
+    return _k32.WaitForSingleObject(stop_event, 0) == 0  # WAIT_OBJECT_0
+
+
+def cmd_stop(args):
+    """Laufende Bridge über ihr Stopp-Ereignis beenden und warten, bis sie wirklich weg ist."""
+    event = _k32.OpenEventW(0x0002, False, STOP_EVENT)  # EVENT_MODIFY_STATE
+    if not event:
+        print("Es läuft keine MCDU-Bridge.", flush=True)
+        sys.exit(EXIT_NOT_RUNNING)
+    _k32.SetEvent(event)
+    _k32.CloseHandle(event)
+    print("Stopp-Signal gesendet, warte auf das Ende der Bridge ...", flush=True)
+    end = time.monotonic() + args.timeout
+    while time.monotonic() < end:
+        mutex = _k32.OpenMutexW(0x00100000, False, INSTANCE_MUTEX)  # SYNCHRONIZE
+        if not mutex:  # Mutex weg = Prozess beendet
+            print("Die MCDU-Bridge wurde beendet.", flush=True)
+            return
+        _k32.CloseHandle(mutex)
+        time.sleep(0.2)
+    print(f"Die Bridge hat sich nach {args.timeout} s nicht beendet. Bitte ihr Fenster schließen.", flush=True)
+    sys.exit(EXIT_STOP_TIMEOUT)
 
 
 async def open_mobiflight(url):
@@ -716,7 +754,7 @@ async def open_mobiflight(url):
     return ws
 
 
-async def cmd_run(args):
+async def cmd_run(args, stop_event):
     lib = GlyphLibrary()
     if args.debug:
         enable_ansi()
@@ -726,7 +764,7 @@ async def cmd_run(args):
     last_problem = "start"
     last_connection = None
     connection = "Verbindungsaufbau ..."
-    while True:
+    while not stop_requested(stop_event):
         now = time.monotonic()
         # MobiFlight-Verbindung im Hintergrund (wieder) aufbauen. Ein Versuch ohne laufendes
         # MobiFlight dauert unter Windows Sekunden; Erkennung und Anzeige laufen derweil weiter.
@@ -776,6 +814,16 @@ async def cmd_run(args):
                 render_debug(grid, status, problem)
         await asyncio.sleep(args.interval)
 
+    # Stopp-Signal von "stop": Verbindung sauber schließen
+    if connecting is not None:
+        connecting.cancel()
+    if ws is not None:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    print("Stopp-Signal erhalten, MCDU-Bridge beendet.", flush=True)
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -790,6 +838,8 @@ def main():
     r.add_argument("--learn", action="store_true", help="unbekannte Zeichen nach unknown/ speichern")
     r.add_argument("--debug", action="store_true",
                    help="erkannten Bildschirm farbig in der Konsole zeigen, neu gezeichnet nur bei Änderungen")
+    st = sub.add_parser("stop", help="laufende Bridge beenden")
+    st.add_argument("--timeout", type=float, default=10, help="Sekunden, die auf das Ende gewartet wird")
     sh = sub.add_parser("show", parents=[win])
     sh.add_argument("--image", help="gespeicherter Snapshot statt Live-Aufnahme")
     c = sub.add_parser("collect", parents=[win])
@@ -812,11 +862,13 @@ def main():
     WINDOW_OVERRIDE = getattr(args, "window", None)
 
     if args.cmd == "run":
-        ensure_single_instance()
+        stop_event = ensure_single_instance()
         try:
-            asyncio.run(cmd_run(args))
+            asyncio.run(cmd_run(args, stop_event))
         except KeyboardInterrupt:
             pass
+    elif args.cmd == "stop":
+        cmd_stop(args)
     elif args.cmd == "show":
         cmd_show(args)
     elif args.cmd == "collect":

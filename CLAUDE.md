@@ -68,6 +68,9 @@ MSFS-Pop-out ──PrintWindow──► Normalisieren ──► 24×14 zerlegen 
 - **Nur eine Instanz** (`ensure_single_instance`): benannter Mutex `Local\WinCtrlMcduScreenBridge`, nur für `run`.
   Eine zweite Instanz endet mit Exit-Code 3, den `start_bridge.bat` gesondert auswertet. Die Batchdatei braucht
   CRLF-Zeilenenden (siehe `.gitattributes`), sonst springt `goto` unter Umständen falsch.
+- **Beenden** (`stop`, `stop_bridge.bat`): `run` legt zusätzlich das Ereignis `Local\WinCtrlMcduScreenBridgeStop` an
+  und prüft es in jedem Schleifendurchlauf. `stop` setzt es und wartet, bis der Mutex verschwunden ist.
+  Exit-Codes 4 (keine Bridge) und 5 (Zeitüberschreitung). Kein hartes Beenden, keine PID-Dateien.
 - Ohne `--debug` wird der MobiFlight-Status nur bei einem Wechsel ausgegeben, nicht bei jedem Verbindungsversuch.
 - **Debug** (`run --debug`): Farbige Konsolenausgabe (ANSI 24 bit, VT-Modus per SetConsoleMode, stdout UTF-8).
   Neu gezeichnet wird nur, wenn sich der Hash über Zeichen+Farbe, den MobiFlight-Status oder den Fensterzustand ändert.
@@ -86,7 +89,7 @@ MSFS-Pop-out ──PrintWindow──► Normalisieren ──► 24×14 zerlegen 
 - Abschrift `x.txt`: 14 Zeilen, spaltengenau, UTF-8 mit LF (siehe `.gitattributes`).
 - `teach x.txt --image x.png`: Übernimmt neue Zeichenbilder (Größe bei Symbolen vom Nachbarbuchstaben) und meldet
   Abweichungen zwischen Bild und Abschrift.
-- `snapshots/`: 29 Referenzseiten (Bild + Abschrift), Stand v1.0.2 mit **0 Fehlern bei 3509 Zeichen**.
+- `snapshots/`: 29 Referenzseiten (Bild + Abschrift), Stand v1.0.3 mit **0 Fehlern bei 3509 Zeichen**.
   Prüfung nach Änderungen an Zerlegung oder Vergleich:
 
 ```python
