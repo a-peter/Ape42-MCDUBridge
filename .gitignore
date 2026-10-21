@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Weitergabe-Paket, wird aus dem Repository neu gebaut
+dist/
+
+# Arbeitsordner von "collect" / "sheet" (unbenannte Zeichenbilder)
+unknown/
+
+# Standardausgabe von "snap" ohne Dateinamen
+snapshots/snap.png
+
+# Editor, Betriebssystem, lokale Claude-Einstellungen
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.claude/settings.local.json

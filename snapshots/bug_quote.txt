@@ -1,0 +1,14 @@
+ FROM          GCCCG  ←→
+        EFOB  WIND
+EDDB    37.7    ---°/---
+        BRG131   37NM
+LUROS   0.0     ---°/---
+ Y211   TRK198   28NM
+BEBKU   0.0      "  / "
+ Z36             34NM
+PIKIB   0.0      "  / "
+ Z36             11NM
+MAREM   0.0      "  / "
+ DEST   TIME  DIST  EFOB
+EDDM    ----  ----  -.--
+                      ↑↓

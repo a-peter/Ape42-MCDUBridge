@@ -1,0 +1,14 @@
+          TO
+ CRZ      OPT    REC MAX
+ -----   FL415    FL415
+
+<REPORT
+
+
+  BRG /DIST
+ ---° /---    TO [     ]
+ PREDICTIVE
+<GPS         GPS PRIMARY
+REQUIRED ACCUR ESTIMATED
+ 1.00NM   HIGH    0.05NM
+A

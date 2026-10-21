@@ -1,0 +1,14 @@
+        SEC INDEX
+
+                   INIT>
+
+←SEC F-PLN
+
+
+
+
+              SEC F-PLN
+                  PRINT*
+
+
+A

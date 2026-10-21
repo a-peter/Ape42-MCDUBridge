@@ -1,0 +1,14 @@
+ FROM                 ←→
+        TIME  SPD/ALT
+EDDH    0000  123/    30
+ (SPD)          310NM
+(LIM)   0003  250/ FL100
+        TRK163  251NM
+(T/C)   0012  .74/ FL320
+        BRG210  210NM
+(T/D)   0031  .76/ FL320
+                 10NM
+(DECEL) 0050  250/  1490
+ DEST   TIME  DIST  EFOB
+EDDM    0052  324   31.2
+CHECK IRS/AIRPORT POS ↑↓

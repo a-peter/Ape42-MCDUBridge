@@ -1,0 +1,14 @@
+          INIT        ←→
+ CO RTE          FROM/TO
+               EDDH/EDDM
+ALTN/CO RTE
+NONE
+FLT NBR
+☐☐☐☐☐☐☐☐       IRS INIT>
+
+
+COST INDEX
+23                 WIND>
+CRZ FL/TEMP        TROPO
+FL320/-47°         36090
+CHECK IRS/AIRPORT POS

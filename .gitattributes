@@ -1,0 +1,7 @@
+# Abschriften sind spaltengenau: immer LF, damit kein \r als Zeichen in einer Spalte landet
+snapshots/*.txt text eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+
+*.png binary

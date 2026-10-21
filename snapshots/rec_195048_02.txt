@@ -1,0 +1,14 @@
+       TAKE OFF
+ V1  FLP RETR
+123    F=141
+ VR  SLT RETR T.O SHIFT
+☐☐☐    S=166         100
+ V2  CLEAN     FLAPS/THS
+☐☐☐    O=201    []/[   ]
+TRANS ALT   FLEX TO TEMP
+5000               [  ]°
+THR RED/ACC  ENG OUT ACC
+ 1030/1030          1030
+ UPLINK            NEXT
+<TO DATA          PHASE>
+CHECK IRS/AIRPORT POS

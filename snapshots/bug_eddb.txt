@@ -1,0 +1,14 @@
+ FROM                 ←→
+        TIME  SPD/ALT
+EDDB    ----  ---/ -----
+
+---F-PLN DISCONTINUITY--
+        TRK192  249NM
+EDDM    ----  ---/ -----
+
+----- END OF F-PLN -----
+
+-----NO ALTN F-PLN------
+ DEST   TIME  DIST  EFOB
+EDDM    ----  251   -.--
+ALIGN IRS             ↑↓

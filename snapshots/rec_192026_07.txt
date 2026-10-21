@@ -1,0 +1,14 @@
+       RADIO NAV
+VOR1/FREQ      VOR2/FREQ
+ BBI/114.10  BBI/114.10
+CRS                  CRS
+[ ]                  [ ]
+ILS /FREQ
+[  ]/[    ]
+CRS
+[ ]
+ADF1/FREQ      ADF2/FREQ
+[  ]/[   . ] [  ]/[   .]
+
+
+A

@@ -1,0 +1,14 @@
+       MCDU MENU
+                 SELECT
+<FM1 (SEL)     NAV B/UP>
+
+<ATSU
+
+<AIDS
+
+<CFDS
+
+
+
+
+INITIALIZE WEIGHT/CG

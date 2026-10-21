@@ -1,0 +1,14 @@
+ FROM                 ←→
+        TIME  SPD/ALT
+PPOS    ----  ---/ -----
+
+---F-PLN DISCONTINUITY--
+
+----- END OF F-PLN -----
+
+-----NO ALTN F-PLN------
+
+
+ DEST   TIME  DIST  EFOB
+----    ----  ----  -.--
+A                     ↑↓

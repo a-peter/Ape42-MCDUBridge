@@ -1,0 +1,14 @@
+          INIT        ←→
+ CO RTE          FROM/TO
+☐☐☐☐☐☐☐☐☐☐     ☐☐☐☐/☐☐☐☐
+ALTN/CO RTE
+----/----------
+FLT NBR
+☐☐☐☐☐☐☐☐       IRS INIT>
+
+
+COST INDEX
+20                 WIND>
+CRZ FL/TEMP        TROPO
+---- /---°         36090
+A

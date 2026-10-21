@@ -1,0 +1,14 @@
+  AOC PRE-FLIGHT MENU
+
+<OOOI STATUS   MESSAGES>
+
+<WX REQUEST      D-ATIS>
+
+                    DCL>
+
+<FLIGHT INIT
+
+*INIT DATALINK
+
+<RETURN            MISC>
+NOT ALLOWED

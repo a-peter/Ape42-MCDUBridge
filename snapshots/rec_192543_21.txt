@@ -1,0 +1,14 @@
+          TO
+ CRZ      OPT    REC MAX
+ -----   -----    -----
+
+<REPORT
+
+
+  BRG /DIST
+ 303° /147.5  TO    EDDH
+ PREDICTIVE
+<GPS         GPS PRIMARY
+REQUIRED ACCUR ESTIMATED
+ 1.00NM   HIGH    0.04NM
+

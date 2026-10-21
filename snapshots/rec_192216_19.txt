@@ -1,0 +1,14 @@
+           CRZ
+ ACT MODE UTC  DEST EFOB
+SELECTED  ---      ---.-
+ CI
+☐☐☐
+ MANAGED
+---/---
+ PRESEL   DES CABIN RATE
+*[   ]              -350
+
+
+ PREV              NEXT
+<PHASE            PHASE>
+ABCDFEGHIJKLMNOPQRSTUVWX

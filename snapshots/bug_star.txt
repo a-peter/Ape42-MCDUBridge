@@ -1,0 +1,14 @@
+DEST     APPR
+ QNH    FLP RETR  FINAL
+[   ]     F=152    -----
+TEMP    SLT RETR   BARO
+[ ]°      S=166      [ ]
+MAG WIND   CLEAN
+[ ]°/[ ]  O=202
+TRANS ALT      LDG CONF
+6000              CONF3*
+ VAPP      VLS
+130        125      FULL
+ PREV              NEXT
+<PHASE            PHASE>
+

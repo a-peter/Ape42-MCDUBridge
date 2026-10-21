@@ -1,0 +1,14 @@
+       MCDU MENU
+                 SELECT
+<FM1           NAV B/UP>
+
+<ATSU (SEL)
+
+<AIDS
+
+<CFDS
+
+
+
+
+WAIT FOR SYSTEM RESPONSE
