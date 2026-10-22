@@ -1,6 +1,6 @@
 """
 Bridge: MCDU-Pop-out des iniBuilds A330 (MSFS 2024) -> WinCtrl/WinWing MCDU über MobiFlight.
-Version 1.0.3
+Version 1.0.4
 
 Der A330 exportiert seinen MCDU-Inhalt nicht (siehe probe_mcdu_export.py). Deshalb wird
 das Pop-out-Fenster ("WASMINSTRUMENT") abfotografiert, in das 24x14-Zeichenraster zerlegt,
@@ -18,12 +18,14 @@ Befehle:
   python mcdu_screen_bridge.py label 3=A 7=←   # unbekannte Zeichen benennen (Nummern aus dem Übersichtsbild)
 """
 
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 import argparse
 import asyncio
+import contextlib
 import ctypes
 import hashlib
+import io
 import json
 import sys
 import time
@@ -38,7 +40,6 @@ GLYPH_DIR = HERE / "glyphs"
 UNKNOWN_DIR = HERE / "unknown"
 
 WINDOW_TITLE = "WASMINSTRUMENT"           # Standardname des MSFS-Pop-outs
-WINDOW_OVERRIDE = None                    # fester Fenstertitel per --window
 MOBIFLIGHT_URL = "ws://localhost:8320/winwing/cdu-captain"
 
 COLS, ROWS = 24, 14
@@ -57,10 +58,17 @@ MATCH_LIMIT = 0.12                        # Abweichung (glyph_distance), bis zu 
 SAME_LIMIT = 0.05                         # darunter gilt ein Zeichenbild als bereits bekannt
 
 
-# ---------------------------------------------------------------- Fenster aufnehmen
+class BridgeError(Exception):
+    """Fehler, der als Meldung (ohne Traceback) ausgegeben wird und das Programm beendet."""
 
-user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
-user32.SetProcessDPIAware()
+
+# ---------------------------------------------------------------- Windows-API
+
+# Eigene DLL-Objekte (nicht ctypes.windll), damit die argtypes/restype hier niemand anderen stören.
+# Mit festen Typen werden 64-bit-Handles nicht auf int gekürzt.
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -70,22 +78,69 @@ class BITMAPINFOHEADER(ctypes.Structure):
                 ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
 
 
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+
+def _declare(func, restype, *argtypes):
+    func.restype, func.argtypes = restype, list(argtypes)
+
+
+_declare(user32.SetProcessDPIAware, wintypes.BOOL)
+_declare(user32.EnumWindows, wintypes.BOOL, WNDENUMPROC, wintypes.LPARAM)
+_declare(user32.IsWindowVisible, wintypes.BOOL, wintypes.HWND)
+_declare(user32.IsIconic, wintypes.BOOL, wintypes.HWND)
+_declare(user32.GetWindowTextLengthW, ctypes.c_int, wintypes.HWND)
+_declare(user32.GetWindowTextW, ctypes.c_int, wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+_declare(user32.GetClassNameW, ctypes.c_int, wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+_declare(user32.GetClientRect, wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+_declare(user32.GetDC, wintypes.HDC, wintypes.HWND)
+_declare(user32.ReleaseDC, ctypes.c_int, wintypes.HWND, wintypes.HDC)
+_declare(user32.PrintWindow, wintypes.BOOL, wintypes.HWND, wintypes.HDC, wintypes.UINT)
+_declare(gdi32.CreateCompatibleDC, wintypes.HDC, wintypes.HDC)
+_declare(gdi32.CreateCompatibleBitmap, wintypes.HBITMAP, wintypes.HDC, ctypes.c_int, ctypes.c_int)
+_declare(gdi32.SelectObject, wintypes.HGDIOBJ, wintypes.HDC, wintypes.HGDIOBJ)
+_declare(gdi32.DeleteObject, wintypes.BOOL, wintypes.HGDIOBJ)
+_declare(gdi32.DeleteDC, wintypes.BOOL, wintypes.HDC)
+_declare(gdi32.GetDIBits, ctypes.c_int, wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
+         ctypes.c_void_p, ctypes.POINTER(BITMAPINFOHEADER), wintypes.UINT)
+_declare(kernel32.GetStdHandle, wintypes.HANDLE, wintypes.DWORD)
+_declare(kernel32.GetConsoleMode, wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+_declare(kernel32.SetConsoleMode, wintypes.BOOL, wintypes.HANDLE, wintypes.DWORD)
+_declare(kernel32.CreateMutexW, wintypes.HANDLE, ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+_declare(kernel32.OpenMutexW, wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
+_declare(kernel32.CreateEventW, wintypes.HANDLE, ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR)
+_declare(kernel32.OpenEventW, wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
+_declare(kernel32.SetEvent, wintypes.BOOL, wintypes.HANDLE)
+_declare(kernel32.CloseHandle, wintypes.BOOL, wintypes.HANDLE)
+_declare(kernel32.WaitForSingleObject, wintypes.DWORD, wintypes.HANDLE, wintypes.DWORD)
+
+# Konstanten aus den Windows-Headern
+PW_CLIENTONLY, PW_RENDERFULLCONTENT = 0x1, 0x2
+DIB_RGB_COLORS, BI_RGB = 0, 0
+STD_OUTPUT_HANDLE = 0xFFFFFFF5  # (DWORD)-11
+ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+ERROR_ALREADY_EXISTS = 183
+EVENT_MODIFY_STATE = 0x0002
+SYNCHRONIZE = 0x00100000
+WAIT_OBJECT_0 = 0
+
+user32.SetProcessDPIAware()
+
+
+# ---------------------------------------------------------------- Fenster aufnehmen
+
 def find_window(title=None):
     """Pop-out-Fenster suchen. Mit festem Titel (--window) nur genau diesen. Sonst zuerst das
     MSFS-Standardfenster "WASMINSTRUMENT", ersatzweise ein MSFS-Fenster mit "MCDU" im Titel
     (z.B. "MCDU Cpt (Custom)" aus dem MSFS Pop Out Panel Manager); Kapitänsseite bevorzugt."""
-    title = title or WINDOW_OVERRIDE
     windows = []
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    @WNDENUMPROC
     def cb(hwnd, _):
         if user32.IsWindowVisible(hwnd):
-            n = user32.GetWindowTextLengthW(hwnd)
-            buf = ctypes.create_unicode_buffer(n + 1)
-            user32.GetWindowTextW(hwnd, buf, n + 1)
             cls = ctypes.create_unicode_buffer(64)
             user32.GetClassNameW(hwnd, cls, 64)
-            windows.append((hwnd, buf.value, cls.value))
+            windows.append((hwnd, window_title(hwnd), cls.value))
         return True
 
     user32.EnumWindows(cb, 0)
@@ -101,6 +156,8 @@ def find_window(title=None):
 
 
 def window_title(hwnd):
+    if not hwnd:
+        return ""
     n = user32.GetWindowTextLengthW(hwnd)
     buf = ctypes.create_unicode_buffer(n + 1)
     user32.GetWindowTextW(hwnd, buf, n + 1)
@@ -115,19 +172,23 @@ def capture(hwnd):
     if w <= 0 or h <= 0:
         return None
     hdc = user32.GetDC(hwnd)
+    if not hdc:
+        return None
     mdc = gdi32.CreateCompatibleDC(hdc)
     bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
     old = gdi32.SelectObject(mdc, bmp)
     try:
-        user32.PrintWindow(hwnd, mdc, 3)  # PW_CLIENTONLY | PW_RENDERFULLCONTENT
-        bmi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        user32.PrintWindow(hwnd, mdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT)
+        bmi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB, 0, 0, 0, 0, 0)
         buf = ctypes.create_string_buffer(w * h * 4)
-        gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bmi), 0)
+        lines = gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bmi), DIB_RGB_COLORS)
     finally:
         gdi32.SelectObject(mdc, old)
         gdi32.DeleteObject(bmp)
         gdi32.DeleteDC(mdc)
         user32.ReleaseDC(hwnd, hdc)
+    if lines != h:
+        return None
     return np.frombuffer(buf, np.uint8).reshape(h, w, 4)[:, :, 2::-1].copy()
 
 
@@ -141,7 +202,7 @@ def normalize(rgb):
     if crop.shape[1] < 100 or crop.shape[0] < 100:
         return None
     if crop.shape[:2] != (REF_H, REF_W):
-        crop = np.asarray(Image.fromarray(crop).resize((REF_W, REF_H), Image.BILINEAR))
+        crop = np.asarray(Image.fromarray(crop).resize((REF_W, REF_H), Image.Resampling.BILINEAR))
     return crop.astype(np.int16)
 
 
@@ -181,10 +242,8 @@ def segment(img):
         bottom = int(round(ROW0_BOTTOM + row * ROW_PITCH))
         y0, y1 = max(0, bottom - CELL_H + 3), min(REF_H, bottom + 3)
         band = lum[y0:y1]
-        ink_cols = (band > INK).any(axis=0)
-        if not ink_cols.any():
+        if not (band > INK).any():
             continue
-        xs = np.where(ink_cols)[0]
         # Zusammenhängende Zeichenteile bilden und über ihre Mitte einer Spalte zuordnen.
         # Teile breiter als eine Zelle (z.B. aneinanderstoßende Kästchen) werden pixelweise verteilt.
         by_col = {}
@@ -278,7 +337,7 @@ def components(mask):
     order = np.argsort(lab, kind="stable")
     ys, xs, lab = ys[order], xs[order], lab[order]
     cuts = np.nonzero(np.diff(lab))[0] + 1
-    return list(zip(np.split(ys, cuts), np.split(xs, cuts)))
+    return list(zip(np.split(ys, cuts), np.split(xs, cuts), strict=True))
 
 
 # ---------------------------------------------------------------- Zeichensammlung
@@ -291,6 +350,7 @@ def glyph_char(path):
 class GlyphLibrary:
     def __init__(self):
         self.chars, self.sizes, self.shapes, self.synthetic = [], [], [], []
+        self.last_synthetic = False   # stammt das Ergebnis des letzten match() aus einer Nachbildung?
         GLYPH_DIR.mkdir(exist_ok=True)
         for p in sorted(GLYPH_DIR.glob("*.png")):
             self.synthetic.append(p.stem.endswith("_synth"))
@@ -304,6 +364,7 @@ class GlyphLibrary:
         self.cache = {}
 
     def match(self, shape):
+        self.last_synthetic = False
         if self.stack is None or self.stack.shape[1:] != shape.shape:
             return None, 1.0, 0
         # Unveränderte Zellen kommen von Bild zu Bild immer wieder: Ergebnis zwischenspeichern
@@ -329,11 +390,22 @@ class GlyphLibrary:
         self.shapes.append(shape)
         self._restack()
 
+    def remove_synthetic(self, ch, size):
+        """Nachbildung eines Zeichens aus Bibliothek und Ordner entfernen. Liefert True, wenn es eine gab."""
+        drop = [i for i, (c, s, syn) in enumerate(zip(self.chars, self.sizes, self.synthetic, strict=True))
+                if syn and c == ch and s == size]
+        for i in reversed(drop):
+            del self.chars[i], self.sizes[i], self.shapes[i], self.synthetic[i]
+        (GLYPH_DIR / f"{'S' if size else 'L'}_{ord(ch):04X}_synth.png").unlink(missing_ok=True)
+        if drop:
+            self._restack()
+        return bool(drop)
+
 
 def glyph_distance(stack, shape):
     """Anteil deutlich verschiedener Pixel an allen Schriftpixeln (bestes von ±1 px Verschiebung).
     Reagiert auch auf kleine Details wie den Haken der 1 gegenüber dem I."""
-    stack = stack.reshape((-1,) + shape.shape)
+    stack = stack.reshape((-1, *shape.shape))
     best = np.full(len(stack), 1.0)
     for dx in (-1, 0, 1):
         for dy in (-1, 0, 1):
@@ -345,7 +417,7 @@ def glyph_distance(stack, shape):
 
 
 def recognize(lib, cells):
-    grid = [[None] * COLS for _ in range(ROWS)]
+    grid: list[list[tuple[str, Cell] | None]] = [[None] * COLS for _ in range(ROWS)]
     unknown = []
     for c in cells:
         ch, dist, size = lib.match(c.shape)
@@ -358,13 +430,17 @@ def recognize(lib, cells):
     # Satzzeichen (. - / [ ] ° ...) sehen in beiden Größen fast gleich aus: Größe vom nächsten
     # Buchstaben/Ziffer derselben Zeile übernehmen, bevorzugt in gleicher Farbe.
     for row in grid:
-        anchors = [g for g in row if g is not None and g[0].isalnum()]
+        anchors = [g[1] for g in row if g is not None and g[0].isalnum()]
         for g in row:
             if g is None or g[0].isalnum() or g[0] == "?" or not anchors:
                 continue
-            c = g[1]
-            c.size = min(anchors, key=lambda a: (a[1].color != c.color, abs(a[1].col - c.col)))[1].size
+            g[1].size = nearest_anchor(anchors, g[1]).size
     return grid, unknown
+
+
+def nearest_anchor(anchors, cell):
+    """Nächste Zelle derselben Zeile, bevorzugt in gleicher Farbe."""
+    return min(anchors, key=lambda a: (a.color != cell.color, abs(a.col - cell.col)))
 
 
 def grid_text(grid):
@@ -392,7 +468,7 @@ def save_unknown(cells):
     new = 0
     for c in cells:
         img = Image.fromarray((c.shape * 255).astype(np.uint8))
-        key = hashlib.sha1(np.round(c.shape * 8).astype(np.uint8).tobytes()).hexdigest()[:10]
+        key = hashlib.sha1(np.round(c.shape * 8).astype(np.uint8).tobytes(), usedforsecurity=False).hexdigest()[:10]
         p = UNKNOWN_DIR / f"{'S' if c.size else 'L'}_{key}.png"
         if not p.exists():
             img.save(p)
@@ -419,31 +495,52 @@ def make_sheet():
     if not files:
         print("Keine unbekannten Zeichen.")
         return
-    per_row, sw, sh = 12, CELL_W * 3 + 10, 34 * 3 + 22
+    per_row, sw, sh = 12, CELL_W * 3 + 10, CELL_H * 3 + 22
     sheet = Image.new("RGB", (per_row * sw, ((len(files) - 1) // per_row + 1) * sh), (40, 40, 40))
     d = ImageDraw.Draw(sheet)
     index = {}
     for i, p in enumerate(files):
-        g = Image.open(p).resize((CELL_W * 3, 34 * 3), Image.NEAREST)
+        with Image.open(p) as src:
+            g = src.resize((CELL_W * 3, CELL_H * 3), Image.Resampling.NEAREST)
         x, y = (i % per_row) * sw, (i // per_row) * sh
         sheet.paste(g.convert("RGB"), (x + 5, y + 18))
         d.text((x + 5, y + 3), f"{i} {p.stem[0]}", fill=(255, 200, 0))
         index[str(i)] = p.name
     sheet.save(UNKNOWN_DIR / "_sheet.png")
-    (UNKNOWN_DIR / "_index.json").write_text(json.dumps(index, indent=1))
+    (UNKNOWN_DIR / "_index.json").write_text(json.dumps(index, indent=1), encoding="utf-8")
     print(f"{len(files)} unbekannte Zeichen -> {UNKNOWN_DIR / '_sheet.png'}")
 
 
+def parse_label(pair, index):
+    """"Nummer=Zeichen" prüfen. Liefert (Nummer, Zeichen); Zeichen ist None bei "skip"."""
+    num, sep, ch = pair.partition("=")
+    if not sep:
+        raise BridgeError(f"'{pair}': erwartet Nummer=Zeichen, z.B. 3=A")
+    if num not in index:
+        raise BridgeError(f"'{pair}': Nummer {num} steht nicht im Übersichtsbild (0 bis {len(index) - 1})")
+    if ch.lower() == "skip":
+        return num, None
+    if ch.lower() == "space":
+        ch = " "
+    if len(ch) != 1:
+        raise BridgeError(f"'{pair}': genau ein Zeichen angeben (oder space/skip)")
+    return num, ch
+
+
 def label(pairs):
-    index = json.loads((UNKNOWN_DIR / "_index.json").read_text())
-    for pair in pairs:
-        num, ch = pair.split("=", 1)
-        if ch.lower() == "space":
-            ch = " "
-        if ch.lower() == "skip":
+    index_file = UNKNOWN_DIR / "_index.json"
+    if not index_file.exists():
+        raise BridgeError("Kein Übersichtsbild vorhanden, zuerst 'sheet' oder 'collect' ausführen.")
+    index = json.loads(index_file.read_text(encoding="utf-8"))
+    parsed = [parse_label(pair, index) for pair in pairs]  # erst alles prüfen, dann umbenennen
+    for num, ch in parsed:
+        if ch is None:
             (UNKNOWN_DIR / index[num]).unlink(missing_ok=True)
             continue
         src = UNKNOWN_DIR / index[num]
+        if not src.exists():
+            print(f"{num}: {src.name} gibt es nicht mehr, übersprungen")
+            continue
         size, key = src.stem.split("_", 1)
         dst = GLYPH_DIR / f"{size}_{ord(ch):04X}_{key}.png"
         GLYPH_DIR.mkdir(exist_ok=True)
@@ -453,7 +550,7 @@ def label(pairs):
 
 def teach(lib, cells, lines, key_prefix):
     """Zellen anhand einer Abschrift des Bildschirms (14 Zeilen Text) in die Bibliothek übernehmen."""
-    lines = [(l + " " * COLS)[:COLS] for l in (lines + [""] * ROWS)[:ROWS]]
+    lines = [(line + " " * COLS)[:COLS] for line in [*lines, *[""] * ROWS][:ROWS]]
     by_pos = {(c.row, c.col): c for c in cells}
     added = problems = 0
     for (row, col), c in sorted(by_pos.items()):
@@ -464,9 +561,9 @@ def teach(lib, cells, lines, key_prefix):
             continue
         # Größe: bei Buchstaben/Ziffern aus der Höhe, bei Symbolen vom nächsten Buchstaben der Zeile
         if not ch.isalnum():
-            neighbours = [n for n in cells if n.row == row and lines[row][n.col].isalnum()]
+            neighbours = [(abs(n.col - col), n.size) for n in cells if n.row == row and lines[row][n.col].isalnum()]
             if neighbours:
-                c.size = min(neighbours, key=lambda n: abs(n.col - col)).size
+                c.size = min(neighbours, key=lambda dn: dn[0])[1]
         known, dist, _ = lib.match(c.shape)
         if known is not None and known != ch and dist < MATCH_LIMIT:
             print(f"  ! Zeile {row} Spalte {col}: '{ch}' sieht aus wie bekanntes '{known}' (Abstand {dist:.3f})")
@@ -476,9 +573,7 @@ def teach(lib, cells, lines, key_prefix):
         lib.add(ch, c.size, c.shape, f"{key_prefix}{row:02d}{col:02d}")
         added += 1
         # ein echtes Exemplar ersetzt ein künstlich erzeugtes (siehe synthesize_small)
-        synth = GLYPH_DIR / f"{'S' if c.size else 'L'}_{ord(ch):04X}_synth.png"
-        if synth.exists():
-            synth.unlink()
+        if lib.remove_synthetic(ch, c.size):
             print(f"  echtes '{ch}' ersetzt das künstliche Zeichenbild")
     for row in range(ROWS):
         for col in range(COLS):
@@ -496,50 +591,65 @@ def synthesize_small(lib, chars):
         ys, xs = np.nonzero(s > 0.3)
         return ys.min(), ys.max(), xs.min(), xs.max()
 
+    def extent(s):
+        """Höhe und Breite des Zeichens."""
+        y0, y1, x0, x1 = bbox(s)
+        return y1 - y0 + 1, x1 - x0 + 1
+
     first = {}
-    for ch, size, shape in zip(lib.chars, lib.sizes, lib.shapes):
+    for ch, size, shape in zip(lib.chars, lib.sizes, lib.shapes, strict=True):
         first.setdefault((ch, size), shape)
     pairs = [c for (c, s) in first if s == 0 and (c, 1) in first and c.isalpha() and c != "I"]
     if not pairs:
-        sys.exit("Zu wenige Zeichen in beiden Größen, um den Maßstab zu bestimmen.")
-    fy = float(np.median([(lambda a, b: (a[1] - a[0] + 1) / (b[1] - b[0] + 1))(bbox(first[c, 1]), bbox(first[c, 0])) for c in pairs]))
-    fx = float(np.median([(lambda a, b: (a[3] - a[2] + 1) / (b[3] - b[2] + 1))(bbox(first[c, 1]), bbox(first[c, 0])) for c in pairs]))
+        raise BridgeError("Zu wenige Zeichen in beiden Größen, um den Maßstab zu bestimmen.")
+    ratios = np.array([np.divide(extent(first[c, 1]), extent(first[c, 0])) for c in pairs])
+    fy, fx = (float(v) for v in np.median(ratios, axis=0))
     for ch in chars:
         if (ch, 0) not in first:
             print(f"'{ch}': kein großes Vorbild vorhanden, übersprungen")
             continue
         shape = first[ch, 0]
         y0, y1, x0, x1 = bbox(shape)
-        g = Image.fromarray((shape[y0:y1 + 1, x0:x1 + 1] * 255).astype(np.uint8))
-        w, h = max(1, round(g.width * fx)), max(1, round(g.height * fy))
-        g = np.asarray(g.resize((w, h), Image.LANCZOS), np.float32) / 255
+        big = Image.fromarray((shape[y0:y1 + 1, x0:x1 + 1] * 255).astype(np.uint8))
+        w, h = max(1, round(big.width * fx)), max(1, round(big.height * fy))
+        small = np.asarray(big.resize((w, h), Image.Resampling.LANCZOS), np.float32) / 255
         out = np.zeros_like(shape)
-        top = int(round(BASELINE - (BASELINE - y1) * fy)) - h + 1
+        top = round(BASELINE - (BASELINE - y1) * fy) - h + 1
         left = (CELL_W - w) // 2
-        out[max(0, top):top + h, left:left + w] = g[max(0, -top):, :]
+        out[max(0, top):top + h, left:left + w] = small[max(0, -top):, :]
         lib.add(ch, 1, np.clip(out, 0, 1), "synth")
         print(f"'{ch}': kleines Zeichenbild erzeugt (Faktor {fx:.2f} x {fy:.2f})")
 
 
 # ---------------------------------------------------------------- Betriebsarten
 
-def grab_image():
-    hwnd = find_window()
+def grab_image(title=None):
+    hwnd = find_window(title)
     if not hwnd:
         return None
     rgb = capture(hwnd)
     return normalize(rgb) if rgb is not None else None
 
 
-def grab_cells():
-    img = grab_image()
+def grab_cells(title=None):
+    img = grab_image(title)
     return segment(img) if img is not None else None
 
 
+def load_image(path):
+    """Gespeicherten Snapshot so laden, wie grab_image ihn liefert."""
+    with Image.open(path) as img:
+        return np.asarray(img.convert("RGB")).astype(np.int16)
+
+
+def no_window_error(title):
+    return BridgeError(" ".join(p for p in window_problem(title) if p))
+
+
 def cmd_snap(args):
-    img = grab_image()
+    img = grab_image(args.window)
     if img is None:
-        sys.exit(" ".join(p for p in window_problem() if p))
+        raise no_window_error(args.window)
     out = Path(args.file)
     out.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(img.astype(np.uint8)).save(out)
@@ -556,18 +666,19 @@ def cmd_record(args):
     print(f"Nehme {args.seconds} s lang Seiten mit unbekannten Zeichen auf ...", flush=True)
     last_text = None
     while time.time() < end:
-        img = grab_image()
+        img = grab_image(args.window)
         if img is not None:
             grid, unknown = recognize(lib, segment(img))
             fresh = [c for c in unknown
                      if not pending or glyph_distance(np.stack(pending), c.shape).min() >= SAME_LIMIT]
             text = grid_text(grid)
-            if args.all and text != last_text:
-                fresh = fresh or ["Seitenwechsel"]
+            page_changed = args.all and text != last_text
             last_text = text
-            if fresh:
+            if fresh or page_changed:
                 time.sleep(0.4)  # Seite fertig aufbauen lassen
-                img = grab_image()
+                img = grab_image(args.window)
+                if img is None:  # Fenster inzwischen minimiert oder geschlossen
+                    continue
                 n += 1
                 name = out / f"rec_{time.strftime('%H%M%S')}_{n:02d}.png"
                 Image.fromarray(img.astype(np.uint8)).save(name)
@@ -577,21 +688,25 @@ def cmd_record(args):
     print(f"Fertig, {n} Snapshots.")
 
 
+def image_or_live_cells(args):
+    """Zellen aus --image oder, ohne --image, aus dem Pop-out-Fenster."""
+    if args.image:
+        return segment(load_image(args.image))
+    cells = grab_cells(args.window)
+    if cells is None:
+        raise no_window_error(args.window)
+    return cells
+
+
 def cmd_teach(args):
-    img = Image.open(args.image).convert("RGB") if args.image else None
-    cells = segment(np.asarray(img).astype(np.int16)) if img else grab_cells()
-    lines = Path(args.transcript).read_text(encoding="utf-8").splitlines()  # auch bei CRLF kein \r in einer Spalte
-    teach(GlyphLibrary(), cells, lines, Path(args.transcript).stem[:6] + "_")
+    transcript = Path(args.transcript)
+    lines = transcript.read_text(encoding="utf-8").splitlines()  # auch bei CRLF kein \r in einer Spalte
+    teach(GlyphLibrary(), image_or_live_cells(args), lines, transcript.stem[:6] + "_")
 
 
 def cmd_show(args):
     lib = GlyphLibrary()
-    if args.image:
-        cells = segment(np.asarray(Image.open(args.image).convert("RGB")).astype(np.int16))
-    else:
-        cells = grab_cells()
-    if cells is None:
-        sys.exit(" ".join(p for p in window_problem() if p))
+    cells = image_or_live_cells(args)
     grid, unknown = recognize(lib, cells)
     print(grid_text(grid))
     print(f"{len(cells)} Zeichen, {len(unknown)} unbekannt, Bibliothek: {len(lib.chars)} Zeichenbilder")
@@ -603,7 +718,7 @@ def cmd_collect(args):
     lib = GlyphLibrary()
     print(f"Sammle {args.seconds} s lang unbekannte Zeichen ... MCDU-Seiten durchblättern!")
     while time.time() < end:
-        cells = grab_cells()
+        cells = grab_cells(args.window)
         if cells:
             _, unknown = recognize(lib, cells)
             total += save_unknown(unknown)
@@ -622,17 +737,19 @@ ANSI_RGB = {
 }
 
 
+def use_utf8_output():
+    """Ausgaben als UTF-8 (für ←↑☐°Δ), auch wenn sie in eine Datei oder Pipe umgeleitet werden."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8")
+
+
 def enable_ansi():
-    """Farb-/Steuersequenzen in der Windows-Konsole einschalten und UTF-8 ausgeben (für ←↑☐°Δ)."""
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except (AttributeError, ValueError):
-        pass
-    kernel32 = ctypes.windll.kernel32
-    handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+    """Farb-/Steuersequenzen in der Windows-Konsole einschalten."""
+    handle = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
     mode = wintypes.DWORD()
     if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-        kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 
 
 def screen_hash(grid):
@@ -640,15 +757,15 @@ def screen_hash(grid):
     if grid is None:
         return "kein Fenster"
     cells = "".join(" ." if g is None else g[0] + (g[1].color if g[0] != "?" else "?") for row in grid for g in row)
-    return hashlib.sha1(cells.encode("utf-8")).hexdigest()
+    return hashlib.sha1(cells.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
-def window_problem():
+def window_problem(title=None):
     """Warum kein Bild kommt: Ein minimiertes Pop-out zeichnet MSFS nicht, es liefert nur Schwarz."""
-    hwnd = find_window()
+    hwnd = find_window(title)
     if not hwnd:
-        if WINDOW_OVERRIDE:
-            return ["Fenster", WINDOW_OVERRIDE[:COLS], "nicht gefunden"]
+        if title:
+            return ["Fenster", title[:COLS], "nicht gefunden"]
         return ["Kein MCDU-Pop-out", "gefunden", "", f"(Titel {WINDOW_TITLE}", "oder mit MCDU im Titel)"]
     name = window_title(hwnd)[:COLS]
     if user32.IsIconic(hwnd):
@@ -660,14 +777,15 @@ def window_problem():
 def render_debug(grid, status, problem=None):
     """Bildschirm löschen und den erkannten Inhalt farbig ausgeben."""
     out = ["\x1b[H\x1b[2J\x1b[3J"]  # Cursor nach oben links, Bildschirm und Scrollpuffer löschen
-    border = "\x1b[38;2;90;90;90m+" + "-" * COLS + "+\x1b[0m"
+    frame = "\x1b[38;2;90;90;90m"  # Farbe des Rahmens
+    border = frame + "+" + "-" * COLS + "+\x1b[0m"
     out.append(border)
     if grid is None:
         lines = problem or []
         first = (ROWS - len(lines)) // 2
         for row in range(ROWS):
             text = lines[row - first] if 0 <= row - first < len(lines) else ""
-            out.append(f"\x1b[38;2;90;90;90m|\x1b[0m\x1b[38;2;235;165;45m{text:^{COLS}}\x1b[0m\x1b[38;2;90;90;90m|\x1b[0m")
+            out.append(f"{frame}|\x1b[0m\x1b[38;2;235;165;45m{text:^{COLS}}\x1b[0m{frame}|\x1b[0m")
     else:
         for row in grid:
             line = ["\x1b[38;2;90;90;90m|\x1b[0m"]
@@ -696,57 +814,48 @@ EXIT_NOT_RUNNING = 4
 EXIT_STOP_TIMEOUT = 5
 _instance_handles = []     # Mutex- und Ereignis-Handle bis Prozessende festhalten
 
-_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_k32.CreateMutexW.restype = _k32.OpenMutexW.restype = wintypes.HANDLE
-_k32.CreateEventW.restype = _k32.OpenEventW.restype = wintypes.HANDLE
-_k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
-_k32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
-_k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
-_k32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
-_k32.SetEvent.argtypes = _k32.CloseHandle.argtypes = [wintypes.HANDLE]
-_k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-
 
 def ensure_single_instance():
     """Nur eine laufende Bridge erlauben: benannter Windows-Mutex. Windows gibt ihn beim Prozessende
     automatisch frei, auch nach einem Absturz; es bleiben also keine Sperrdateien liegen.
     Liefert das Stopp-Ereignis, über das "stop" die laufende Bridge beendet."""
-    mutex = _k32.CreateMutexW(None, False, INSTANCE_MUTEX)
-    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+    mutex = kernel32.CreateMutexW(None, False, INSTANCE_MUTEX)
+    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
         print("Die MCDU-Bridge läuft bereits. Diese zweite Instanz wird beendet.", flush=True)
         sys.exit(EXIT_ALREADY_RUNNING)
-    stop_event = _k32.CreateEventW(None, True, False, STOP_EVENT)  # manuell zurückgesetzt, anfangs aus
+    stop_event = kernel32.CreateEventW(None, True, False, STOP_EVENT)  # manuell zurückgesetzt, anfangs aus
     _instance_handles.extend([mutex, stop_event])
     return stop_event
 
 
 def stop_requested(stop_event):
-    return _k32.WaitForSingleObject(stop_event, 0) == 0  # WAIT_OBJECT_0
+    return kernel32.WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0
 
 
 def cmd_stop(args):
     """Laufende Bridge über ihr Stopp-Ereignis beenden und warten, bis sie wirklich weg ist."""
-    event = _k32.OpenEventW(0x0002, False, STOP_EVENT)  # EVENT_MODIFY_STATE
+    event = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, STOP_EVENT)
     if not event:
         print("Es läuft keine MCDU-Bridge.", flush=True)
         sys.exit(EXIT_NOT_RUNNING)
-    _k32.SetEvent(event)
-    _k32.CloseHandle(event)
+    kernel32.SetEvent(event)
+    kernel32.CloseHandle(event)
     print("Stopp-Signal gesendet, warte auf das Ende der Bridge ...", flush=True)
     end = time.monotonic() + args.timeout
     while time.monotonic() < end:
-        mutex = _k32.OpenMutexW(0x00100000, False, INSTANCE_MUTEX)  # SYNCHRONIZE
+        mutex = kernel32.OpenMutexW(SYNCHRONIZE, False, INSTANCE_MUTEX)
         if not mutex:  # Mutex weg = Prozess beendet
             print("Die MCDU-Bridge wurde beendet.", flush=True)
             return
-        _k32.CloseHandle(mutex)
+        kernel32.CloseHandle(mutex)
         time.sleep(0.2)
     print(f"Die Bridge hat sich nach {args.timeout} s nicht beendet. Bitte ihr Fenster schließen.", flush=True)
     sys.exit(EXIT_STOP_TIMEOUT)
 
 
 async def open_mobiflight(url):
-    import websockets
+    # erst hier importieren: show/teach/record laufen auch ohne installiertes websockets
+    import websockets  # pylint: disable=import-outside-toplevel
 
     ws = await asyncio.wait_for(websockets.connect(url, ping_interval=None), 5)
     await ws.send(json.dumps({"Target": "Font", "Data": "AirbusThales"}))
@@ -761,7 +870,7 @@ async def cmd_run(args, stop_event):
     print(f"MCDU Screen Bridge {__version__} - Bibliothek: {len(lib.chars)} Zeichenbilder. "
           f"Verbinde mit {args.url} ...", flush=True)
     ws, connecting, next_try, last_sent, last_hash = None, None, 0.0, None, None
-    last_problem = "start"
+    last_problem: list[str] | None = ["start"]  # unterscheidet sich von jedem echten Zustand
     last_connection = None
     connection = "Verbindungsaufbau ..."
     while not stop_requested(stop_event):
@@ -774,13 +883,14 @@ async def cmd_run(args, stop_event):
             try:
                 ws = connecting.result()
                 last_sent, connection = None, "verbunden"
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+                # jeder Fehler beim Verbinden führt nur zu einem neuen Versuch
                 next_try = now + 5
-                connection = f"nicht verbunden ({type(e).__name__}), neuer Versuch alle 5 s"
+                connection = f"nicht verbunden ({describe(e)}), neuer Versuch alle 5 s"
             connecting = None
 
         t0 = time.perf_counter()
-        cells = grab_cells()
+        cells = grab_cells(args.window)
         grid, unknown = recognize(lib, cells) if cells is not None else (None, [])
         took = (time.perf_counter() - t0) * 1000
         if grid is not None:
@@ -791,21 +901,22 @@ async def cmd_run(args, stop_event):
                 try:
                     await ws.send(msg)
                     last_sent = msg
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+                    # jeder Sendefehler führt zum Neuaufbau der Verbindung
                     ws, next_try = None, time.monotonic() + 5
-                    connection = f"Verbindung abgebrochen ({type(e).__name__}), neuer Versuch in 5 s"
+                    connection = f"Verbindung abgebrochen ({describe(e)}), neuer Versuch in 5 s"
         # ohne --debug den MobiFlight-Status nur bei einem Wechsel melden, nicht bei jedem neuen Versuch
         if not args.debug and connection != last_connection:
             print(f"MobiFlight: {connection}", flush=True)
             last_connection = connection
 
-        problem = window_problem() if grid is None else None
+        problem = window_problem(args.window) if grid is None else None
         if not args.debug and problem != last_problem:
             print(" ".join(p for p in problem if p) if problem
-                  else f"Fenster '{window_title(find_window())}' wird gelesen.", flush=True)
+                  else f"Fenster '{window_title(find_window(args.window))}' wird gelesen.", flush=True)
         last_problem = problem
         if args.debug:
-            h = hashlib.sha1((screen_hash(grid) + connection + str(problem)).encode()).hexdigest()
+            h = screen_hash(grid) + connection + str(problem)
             if h != last_hash:
                 last_hash = h
                 status = (f"{time.strftime('%H:%M:%S')}  MobiFlight: {connection}\n"
@@ -818,14 +929,24 @@ async def cmd_run(args, stop_event):
     if connecting is not None:
         connecting.cancel()
     if ws is not None:
-        try:
+        with contextlib.suppress(Exception):  # Verbindung ist evtl. schon weg, das ist hier egal
             await ws.close()
-        except Exception:
-            pass
     print("Stopp-Signal erhalten, MCDU-Bridge beendet.", flush=True)
 
 
-def main():
+def describe(e):
+    """Kurzbeschreibung einer Ausnahme für die Statuszeile: Typ und, falls vorhanden, Meldung."""
+    text = str(e).strip()
+    return f"{type(e).__name__}: {text[:80]}" if text else type(e).__name__
+
+
+def cmd_bridge(args):
+    stop_event = ensure_single_instance()
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(cmd_run(args, stop_event))
+
+
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"mcdu_screen_bridge {__version__}")
     win = argparse.ArgumentParser(add_help=False)
@@ -833,58 +954,52 @@ def main():
                                       "(Standard: WASMINSTRUMENT, sonst ein MSFS-Fenster mit MCDU im Titel)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", parents=[win])
+    r.set_defaults(func=cmd_bridge)
     r.add_argument("--url", default=MOBIFLIGHT_URL)
     r.add_argument("--interval", type=float, default=0.2, help="Sekunden zwischen zwei Aufnahmen")
     r.add_argument("--learn", action="store_true", help="unbekannte Zeichen nach unknown/ speichern")
     r.add_argument("--debug", action="store_true",
                    help="erkannten Bildschirm farbig in der Konsole zeigen, neu gezeichnet nur bei Änderungen")
     st = sub.add_parser("stop", help="laufende Bridge beenden")
+    st.set_defaults(func=cmd_stop)
     st.add_argument("--timeout", type=float, default=10, help="Sekunden, die auf das Ende gewartet wird")
     sh = sub.add_parser("show", parents=[win])
+    sh.set_defaults(func=cmd_show)
     sh.add_argument("--image", help="gespeicherter Snapshot statt Live-Aufnahme")
     c = sub.add_parser("collect", parents=[win])
+    c.set_defaults(func=cmd_collect)
     c.add_argument("--seconds", type=int, default=120)
     sn = sub.add_parser("snap", parents=[win], help="Displayinhalt als PNG speichern")
+    sn.set_defaults(func=cmd_snap)
     sn.add_argument("file", nargs="?", default=str(HERE / "snapshots" / "snap.png"))
     t = sub.add_parser("teach", parents=[win], help="Zeichen anhand einer Abschrift (Textdatei, 14 Zeilen) lernen")
+    t.set_defaults(func=cmd_teach)
     t.add_argument("transcript")
     t.add_argument("--image", help="gespeicherter Snapshot statt Live-Aufnahme")
     rc = sub.add_parser("record", parents=[win], help="Seiten mit unbekannten Zeichen als Snapshot speichern")
+    rc.set_defaults(func=cmd_record)
     rc.add_argument("--seconds", type=int, default=600)
-    rc.add_argument("--all", action="store_true", help="jede geänderte Seite speichern, nicht nur bei unbekannten Zeichen")
+    rc.add_argument("--all", action="store_true",
+                    help="jede geänderte Seite speichern, nicht nur bei unbekannten Zeichen")
     sy = sub.add_parser("synth", help="kleine Zeichenbilder aus großen erzeugen (Notlösung)")
+    sy.set_defaults(func=lambda a: synthesize_small(GlyphLibrary(), a.chars))
     sy.add_argument("chars", help="z.B. 6789JKY")
-    sub.add_parser("sheet")
+    sub.add_parser("sheet").set_defaults(func=lambda a: make_sheet())
     lb = sub.add_parser("label")
+    lb.set_defaults(func=lambda a: label(a.pairs))
     lb.add_argument("pairs", nargs="+", help="Nummer=Zeichen, z.B. 3=A 4=space 5=skip")
-    args = ap.parse_args()
-    global WINDOW_OVERRIDE
-    WINDOW_OVERRIDE = getattr(args, "window", None)
+    return ap
 
-    if args.cmd == "run":
-        stop_event = ensure_single_instance()
-        try:
-            asyncio.run(cmd_run(args, stop_event))
-        except KeyboardInterrupt:
-            pass
-    elif args.cmd == "stop":
-        cmd_stop(args)
-    elif args.cmd == "show":
-        cmd_show(args)
-    elif args.cmd == "collect":
-        cmd_collect(args)
-    elif args.cmd == "snap":
-        cmd_snap(args)
-    elif args.cmd == "teach":
-        cmd_teach(args)
-    elif args.cmd == "record":
-        cmd_record(args)
-    elif args.cmd == "synth":
-        synthesize_small(GlyphLibrary(), args.chars)
-    elif args.cmd == "sheet":
-        make_sheet()
-    elif args.cmd == "label":
-        label(args.pairs)
+
+def main():
+    use_utf8_output()
+    args = build_parser().parse_args()
+    try:
+        args.func(args)
+    except BridgeError as e:
+        sys.exit(str(e))
+    except FileNotFoundError as e:
+        sys.exit(f"Datei nicht gefunden: {e.filename}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # WinCtrl MCDU ↔ iniBuilds A330 (MSFS 2024)
 
-Version 1.0.3. Die installierte Version zeigt `python mcdu_screen_bridge.py --version`.
+Version 1.0.4. Die installierte Version zeigt `python mcdu_screen_bridge.py --version`.
 
 Der Microsoft/iniBuilds A330 gibt den MCDU-Inhalt nicht nach außen. Deshalb liest
 `mcdu_screen_bridge.py` den Bildschirm aus dem Pop-out-Fenster ab und schickt ihn über
@@ -13,9 +13,9 @@ MSFS-Pop-out "WASMINSTRUMENT" ──Bildaufnahme──► mcdu_screen_bridge.py 
 
 ## Einrichtung
 
-1. Python 3 (64 bit) und die Pakete installieren:
+1. Python 3.10 oder neuer (64 bit) und die Pakete installieren:
    ```
-   python -m pip install numpy pillow websockets
+   python -m pip install -r requirements.txt
    ```
 2. MobiFlight Connector (ab Version 11) starten, das MCDU muss erkannt sein. **SimAppPro nicht gleichzeitig laufen lassen.**
 3. Im A330 das Kapitäns-MCDU als Pop-out öffnen (Rechtsklick + Alt). Das Fenster heißt `WASMINSTRUMENT`.

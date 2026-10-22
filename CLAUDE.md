@@ -89,28 +89,24 @@ MSFS-Pop-out ──PrintWindow──► Normalisieren ──► 24×14 zerlegen 
 - Abschrift `x.txt`: 14 Zeilen, spaltengenau, UTF-8 mit LF (siehe `.gitattributes`).
 - `teach x.txt --image x.png`: Übernimmt neue Zeichenbilder (Größe bei Symbolen vom Nachbarbuchstaben) und meldet
   Abweichungen zwischen Bild und Abschrift.
-- `snapshots/`: 29 Referenzseiten (Bild + Abschrift), Stand v1.0.3 mit **0 Fehlern bei 3509 Zeichen**.
-  Prüfung nach Änderungen an Zerlegung oder Vergleich:
+- `snapshots/`: 29 Referenzseiten (Bild + Abschrift), Stand v1.0.4 mit **0 Fehlern bei 3509 Zeichen**.
+  Prüfung nach Änderungen an Zerlegung oder Vergleich: `python -m pytest` (`tests/test_recognition.py`,
+  Entwicklungspakete aus `requirements-dev.txt`). Der Test prüft jede Referenzseite einzeln und die Gesamtzahl 3509;
+  bei neuen Referenzseiten die Zahl in `test_snapshot_total` anpassen.
 
-```python
-import glob, numpy as np, mcdu_screen_bridge as m
-from PIL import Image
-lib = m.GlyphLibrary(); bad = tot = 0
-for t in sorted(glob.glob("snapshots/*.txt")):
-    lines = [(l + " " * 24)[:24] for l in (open(t, encoding="utf-8").read().splitlines() + [""] * 14)[:14]]
-    grid, _ = m.recognize(lib, m.segment(np.asarray(Image.open(t[:-4] + ".png").convert("RGB")).astype(np.int16)))
-    for r in range(14):
-        for c in range(24):
-            got = " " if grid[r][c] is None else grid[r][c][0]
-            if got != " " or lines[r][c] != " ":
-                tot += 1; bad += got != lines[r][c]
-print("Fehler", bad, "von", tot)
-```
+## Code-Qualität
+
+- `ruff check .` mit `ruff.toml` (Zeilenlänge 120). Die Bridge ist sauber, `probe_mcdu_export.py` hat noch Altlasten.
+- Win32-Funktionen haben feste `argtypes`/`restype` (`_declare`) auf eigenen `WinDLL`-Objekten, Konstanten benannt.
+- Fehler für den Benutzer als `BridgeError` werfen; `main` gibt sie ohne Traceback aus (Exit-Code 1).
+  Fehlende Dateien ebenso. Befehle werden über `set_defaults(func=...)` verteilt.
+- Der Fenstertitel aus `--window` wird als Parameter durchgereicht (kein globaler Zustand).
+- `main` stellt stdout/stderr auf UTF-8, damit `show` auch in eine Datei oder Pipe schreiben kann.
 
 ## Weitergabe-Paket
 
 `dist/winctrl_mcdu_bridge.zip` (nicht versioniert): Ordner `winctrl_mcdu_bridge/` mit `mcdu_screen_bridge.py`,
-`README.md`, `glyphs/` und einem leeren `snapshots/`. Nach jeder Änderung am Skript neu bauen.
+`requirements.txt`, `README.md`, `glyphs/` und einem leeren `snapshots/`. Nach jeder Änderung am Skript neu bauen.
 
 ## Offene Punkte
 
@@ -123,4 +119,4 @@ print("Fehler", bad, "von", tot)
 ## Konventionen
 
 - Versionsnummer in `__version__` und in der Beschreibung oben im Skript, Git-Tag `vX.Y.Z`.
-- Abhängigkeiten nur `numpy`, `pillow`, `websockets`; Python 3 64 bit; nur Windows (ctypes/user32/gdi32).
+- Abhängigkeiten nur `numpy`, `pillow`, `websockets` (`requirements.txt`); Python ab 3.10, 64 bit; nur Windows (ctypes/user32/gdi32).

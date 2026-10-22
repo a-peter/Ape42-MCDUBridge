@@ -1,0 +1,10 @@
+line-length = 120
+target-version = "py310"
+
+[lint]
+extend-select = ["E", "W", "F", "B", "UP", "SIM", "C4", "RUF", "PTH", "BLE"]
+ignore = [
+    "RUF023",  # Reihenfolge in Cell.__slots__ folgt dem Konstruktor
+    "RUF046",  # int(round(...)): bei numpy < 2 liefert round() auf numpy-Werten noch kein int
+    "PTH123",  # open() in Tests und Hilfsskripten ist hier lesbarer
+]

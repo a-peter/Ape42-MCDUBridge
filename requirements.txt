@@ -1,0 +1,4 @@
+# Laufzeit-Abhängigkeiten der MCDU-Bridge (Python 3.10 oder neuer, 64 bit, nur Windows)
+numpy>=1.24
+pillow>=9.1
+websockets>=12
