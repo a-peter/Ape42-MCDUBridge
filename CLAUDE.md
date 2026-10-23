@@ -65,6 +65,13 @@ MSFS-Pop-out ──PrintWindow──► Normalisieren ──► 24×14 zerlegen 
 - **Betrieb** (`cmd_run`): Die Erkennung läuft immer. Die MobiFlight-Verbindung wird im Hintergrund-Task aufgebaut,
   weil ein Versuch ohne laufendes MobiFlight unter Windows ca. 3 s blockiert. Neuer Versuch alle 5 s.
   Gesendet wird nur bei Änderung.
+  - Nach `{"Target":"Font"}` wartet `open_mobiflight` `FONT_SETTLE_S = 5` s, erst dann gilt die Verbindung als bereit.
+    Grund (aus dem Projekt GlassOut-A330-MCDU übernommen): Der Upload der Schrift dauert, Bildschirme währenddessen
+    laufen in MobiFlight in eine Zeitüberschreitung und können die Schrift halb geladen zurücklassen.
+  - `last_screen` hält den zuletzt erkannten Bildschirm. Nach einem Neuaufbau geht er sofort wieder raus, auch ohne
+    lesbares Fenster.
+  - Ein Abbruch durch MobiFlight wird über `ws.close_code` in jedem Durchlauf erkannt, nicht erst beim nächsten Senden
+    (das bei stehendem Bildschirm nie käme).
 - **Nur eine Instanz** (`ensure_single_instance`): benannter Mutex `Local\WinCtrlMcduScreenBridge`, nur für `run`.
   Eine zweite Instanz endet mit Exit-Code 3, den `start_bridge.bat` gesondert auswertet. Die Batchdatei braucht
   CRLF-Zeilenenden (siehe `.gitattributes`), sonst springt `goto` unter Umständen falsch.

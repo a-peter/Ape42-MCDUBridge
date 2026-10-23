@@ -1,6 +1,6 @@
 """
 Bridge: MCDU-Pop-out des iniBuilds A330 (MSFS 2024) -> WinCtrl/WinWing MCDU über MobiFlight.
-Version 1.0.4
+Version 1.0.5
 
 Der A330 exportiert seinen MCDU-Inhalt nicht (siehe probe_mcdu_export.py). Deshalb wird
 das Pop-out-Fenster ("WASMINSTRUMENT") abfotografiert, in das 24x14-Zeichenraster zerlegt,
@@ -18,7 +18,7 @@ Befehle:
   python mcdu_screen_bridge.py label 3=A 7=←   # unbekannte Zeichen benennen (Nummern aus dem Übersichtsbild)
 """
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 import argparse
 import asyncio
@@ -41,6 +41,7 @@ UNKNOWN_DIR = HERE / "unknown"
 
 WINDOW_TITLE = "WASMINSTRUMENT"           # Standardname des MSFS-Pop-outs
 MOBIFLIGHT_URL = "ws://localhost:8320/winwing/cdu-captain"
+FONT_SETTLE_S = 5                         # Wartezeit nach dem Senden der Schrift, bevor Bildschirme folgen
 
 COLS, ROWS = 24, 14
 
@@ -859,7 +860,10 @@ async def open_mobiflight(url):
 
     ws = await asyncio.wait_for(websockets.connect(url, ping_interval=None), 5)
     await ws.send(json.dumps({"Target": "Font", "Data": "AirbusThales"}))
-    await asyncio.sleep(1)  # MobiFlight Zeit geben, die Schrift zu setzen
+    # Das Hochladen der Schrift ins MCDU dauert einige Sekunden. Bildschirme, die währenddessen
+    # kommen, laufen in MobiFlight in eine Zeitüberschreitung und können die Schrift halb geladen
+    # zurücklassen (fehlende Buchstaben). Erst danach gilt die Verbindung als bereit.
+    await asyncio.sleep(FONT_SETTLE_S)
     return ws
 
 
@@ -870,6 +874,7 @@ async def cmd_run(args, stop_event):
     print(f"MCDU Screen Bridge {__version__} - Bibliothek: {len(lib.chars)} Zeichenbilder. "
           f"Verbinde mit {args.url} ...", flush=True)
     ws, connecting, next_try, last_sent, last_hash = None, None, 0.0, None, None
+    last_screen = None  # zuletzt erkannter Bildschirm, wird nach einem Neuaufbau sofort wieder gesendet
     last_problem: list[str] | None = ["start"]  # unterscheidet sich von jedem echten Zustand
     last_connection = None
     connection = "Verbindungsaufbau ..."
@@ -888,6 +893,11 @@ async def cmd_run(args, stop_event):
                 next_try = now + 5
                 connection = f"nicht verbunden ({describe(e)}), neuer Versuch alle 5 s"
             connecting = None
+        # Ein Abbruch durch MobiFlight fällt sonst erst beim nächsten Senden auf, und gesendet wird
+        # nur bei einer Änderung. Bei einem stehenden Bildschirm bliebe das MCDU dann leer.
+        if ws is not None and ws.close_code is not None:
+            ws, next_try = None, now + 5
+            connection = "Verbindung von MobiFlight beendet, neuer Versuch in 5 s"
 
         t0 = time.perf_counter()
         cells = grab_cells(args.window)
@@ -896,15 +906,17 @@ async def cmd_run(args, stop_event):
         if grid is not None:
             if unknown and args.learn:
                 save_unknown(unknown)
-            msg = to_mobiflight(grid)
-            if ws is not None and msg != last_sent:
-                try:
-                    await ws.send(msg)
-                    last_sent = msg
-                except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
-                    # jeder Sendefehler führt zum Neuaufbau der Verbindung
-                    ws, next_try = None, time.monotonic() + 5
-                    connection = f"Verbindung abgebrochen ({describe(e)}), neuer Versuch in 5 s"
+            last_screen = to_mobiflight(grid)
+        # Nach einem Neuaufbau ist last_sent leer: Der letzte Bildschirm geht dann sofort wieder raus,
+        # auch wenn das Fenster gerade nicht lesbar ist, damit das MCDU nicht leer bleibt.
+        if ws is not None and last_screen is not None and last_screen != last_sent:
+            try:
+                await ws.send(last_screen)
+                last_sent = last_screen
+            except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+                # jeder Sendefehler führt zum Neuaufbau der Verbindung
+                ws, next_try = None, time.monotonic() + 5
+                connection = f"Verbindung abgebrochen ({describe(e)}), neuer Versuch in 5 s"
         # ohne --debug den MobiFlight-Status nur bei einem Wechsel melden, nicht bei jedem neuen Versuch
         if not args.debug and connection != last_connection:
             print(f"MobiFlight: {connection}", flush=True)

@@ -1,6 +1,6 @@
 # WinCtrl MCDU ↔ iniBuilds A330 (MSFS 2024)
 
-Version 1.0.4. Die installierte Version zeigt `python mcdu_screen_bridge.py --version`.
+Version 1.0.5. Die installierte Version zeigt `python mcdu_screen_bridge.py --version`.
 
 Der Microsoft/iniBuilds A330 gibt den MCDU-Inhalt nicht nach außen. Deshalb liest
 `mcdu_screen_bridge.py` den Bildschirm aus dem Pop-out-Fenster ab und schickt ihn über
@@ -34,6 +34,11 @@ MSFS-Pop-out "WASMINSTRUMENT" ──Bildaufnahme──► mcdu_screen_bridge.py 
    ```
    Optionen: `--learn` speichert unbekannte Zeichen in `unknown/`, `--interval 0.2` stellt die Sekunden zwischen zwei
    Aufnahmen ein, `--url` legt die MobiFlight-Adresse fest (Standard: `cdu-captain`).
+
+   Nach dem Verbinden schickt die Bridge zuerst die Schrift „AirbusThales“ und wartet **5 s**, bis das MCDU sie
+   geladen hat. Erst dann kommt der erste Bildschirm, damit der Upload der Schrift nicht unterbrochen wird (sonst
+   fehlen Buchstaben). Bricht die Verbindung ab, baut die Bridge sie neu auf und schickt sofort wieder den zuletzt
+   erkannten Bildschirm, auch wenn das Pop-out gerade nicht lesbar ist.
 
    Alternativ per Doppelklick auf `start_bridge.bat` (startet `run --debug`).
 
